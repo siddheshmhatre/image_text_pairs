@@ -1,13 +1,16 @@
-# Taken from https://huggingface.co/edugp/kenlm/blob/main/model.py
+# Taken from https://huggingface.co/spaces/edugp/perplexity-lenses/blob/main/perplexity_lenses/perplexity.py
 
 import os
 import re
 import unicodedata
 from typing import Dict
+from requests.exceptions import HTTPError
 
 import kenlm
 import sentencepiece
 from huggingface_hub import cached_download, hf_hub_url
+
+KENLM_MODEL_REPO = "edugp/kenlm"
 
 
 class SentencePiece:
@@ -78,10 +81,17 @@ class KenlmModel:
         normalize_numbers: bool = True,
         punctuation: int = 1,
     ):
-        self.model = kenlm.Model(os.path.join(model_dataset, f"{language}.arpa.bin"))
-        self.tokenizer = SentencePiece(
-            os.path.join(model_dataset, f"{language}.sp.model")
-        )
+        self.download_kenlm_model(model_dataset, language)
+        try:
+            self.model = kenlm.Model(self.kenlm_model_dir)
+            self.tokenizer = SentencePiece(self.sentence_piece_model_dir)
+        except OSError:
+            os.remove(self.kenlm_model_dir)
+            if os.path.exists(self.sentence_piece_model_dir):
+                os.remove(self.sentence_piece_model_dir)
+            raise OSError(
+                "File was corrupt and should have been removed. Please, retry."
+            )
         self.accent = remove_accents
         self.case = lower_case
         self.numbers = normalize_numbers
@@ -92,14 +102,18 @@ class KenlmModel:
         cls,
         model_dataset: str,
         language: str,
+        lower_case: bool = False,
+        remove_accents: bool = False,
+        normalize_numbers: bool = True,
+        punctuation: int = 1,
     ):
         return cls(
             model_dataset,
             language,
-            False,
-            False,
-            True,
-            1,
+            lower_case,
+            remove_accents,
+            normalize_numbers,
+            punctuation,
         )
 
     def pp(self, log_score, length):
@@ -165,3 +179,19 @@ class KenlmModel:
 
     def remove_non_printing_char(self, text: str) -> str:
         return self.non_printing_chars_re.sub("", text)
+
+    def download_kenlm_model(self, model_dataset: str, language: str):
+        try:
+            kenlm_model_url = hf_hub_url(
+                KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.trie.bin"
+            )
+            self.kenlm_model_dir = cached_download(kenlm_model_url)
+        except HTTPError:
+            kenlm_model_url = hf_hub_url(
+                KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.bin"
+            )
+            self.kenlm_model_dir = cached_download(kenlm_model_url)
+        sentence_piece_model_url = hf_hub_url(
+            KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.sp.model"
+        )
+        self.sentence_piece_model_dir = cached_download(sentence_piece_model_url)

@@ -4,3 +4,5 @@ pycld3==0.22
 nltk==3.7
 pandas==1.5.2
 fire==0.4.0
+https://github.com/kpu/kenlm/archive/master.zip
+sentencepiece
