@@ -178,10 +178,10 @@ def get_filtered_captions(
 
     output_path = os.path.join(output_path, job_id)
 
-	### TODO - remove ####
+    ### TODO - remove ####
     filename = "../examples/00000_url_to_text.parquet"
     filename = os.path.join(os.path.dirname(__file__), filename)
-	### TODO - remove ####
+    ### TODO - remove ####
 
     image_link_to_surrounding_text = get_image_link_to_surrounding_text(filename)
 
