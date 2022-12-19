@@ -1,4 +1,5 @@
 import re
+import fire
 import os
 import heapq
 import hashlib
@@ -168,7 +169,7 @@ def get_filtered_captions(
     tokenize_sentences=tokenize_sentences,
     ngrams_filter=entity_filter,
     perplexity_filter_func=perplexity_filter,
-    lang_to_perplexity_models={},
+    lang_to_perplexity_models={"en": KenlmModel.from_pretrained("wikipedia", "en")},
     n_largest=10,
 ):
     spark = local_session(num_cores=16, mem_gb=32)
@@ -183,7 +184,7 @@ def get_filtered_captions(
     sc = SparkContext.getOrCreate()
     num_rows = image_link_to_surrounding_text.shape[0]
 
-    print (f"Number of rows : {num_rows}")
+    print(f"Number of rows : {num_rows}")
     data = [(tup[1], tup[2]) for tup in image_link_to_surrounding_text.itertuples()]
     image_to_text_rdd = sc.parallelize(data, num_rows)
 
@@ -203,20 +204,32 @@ def get_filtered_captions(
     image_to_candidate_caps_rdd = image_to_text_rdd.mapPartitions(link_processing_func)
 
     # Filter if no candidate captions
-    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(lambda x : len(x[2]) > 0)
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
+        lambda x: len(x[2]) > 0
+    )
 
-    df = image_to_candidate_caps_rdd.toDF(['uid', 'url', 'candidates'])
+    df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
 
     # Group by uid
-    agg_candidates = df.groupBy(["uid"]).agg(F.flatten(F.collect_list("candidates")).alias("candidates"))
+    agg_candidates = df.groupBy(["uid"]).agg(
+        F.flatten(F.collect_list("candidates")).alias("candidates")
+    )
 
-    df = df.join(agg_candidates, "uid", "inner").drop(df.candidates).drop_duplicates(["uid"])
+    df = (
+        df.join(agg_candidates, "uid", "inner")
+        .drop(df.candidates)
+        .drop_duplicates(["uid"])
+    )
+
+    print(f"Writing to {output_path}")
 
     # Write to disk
     df.write.parquet(output_path)
 
+
+def main():
+    fire.Fire(get_filtered_captions)
+
+
 if __name__ == "__main__":
-
-    lang_to_perp_model = {"en": KenlmModel.from_pretrained("wikipedia", "en")}
-
-    get_filtered_captions(output_path="~/data/bild/image_text_pairs", lang_to_perplexity_models=lang_to_perp_model)
+    main()
