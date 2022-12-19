@@ -8,7 +8,7 @@ import nltk
 import datetime
 import pyspark.sql.functions as F
 from functools import partial
-from model import KenlmModel
+from .model import KenlmModel
 from pyspark.sql import SparkSession
 import pandas as pd
 
@@ -178,7 +178,11 @@ def get_filtered_captions(
 
     output_path = os.path.join(output_path, job_id)
 
-    filename = "/home/siddhesh1793/data/bild/00000_url_to_text.parquet"
+	### TODO - remove ####
+    filename = "../examples/00000_url_to_text.parquet"
+    filename = os.path.join(os.path.dirname(__file__), filename)
+	### TODO - remove ####
+
     image_link_to_surrounding_text = get_image_link_to_surrounding_text(filename)
 
     sc = SparkContext.getOrCreate()
@@ -225,11 +229,3 @@ def get_filtered_captions(
 
     # Write to disk
     df.write.parquet(output_path)
-
-
-def main():
-    fire.Fire(get_filtered_captions)
-
-
-if __name__ == "__main__":
-    main()
