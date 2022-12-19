@@ -1,7 +1,9 @@
 import re
 import heapq
+import hashlib
 import cld3
 import nltk
+import pyspark.sql.functions as F
 from functools import partial
 from model import KenlmModel
 from pyspark.sql import SparkSession
@@ -137,14 +139,18 @@ def image_link_to_caption_candidates(
 
             candidates.extend(filtered_n_grams)
 
-    yield (x[0], candidates)
+    # Create hash of image url to deduplicate
+    url_hash = hashlib.md5(x[0].encode()).hexdigest()
+
+    yield (url_hash, x[0], candidates)
+
 
 def local_session(num_cores=4, mem_gb=16):
     """Build a local spark session"""
     spark = (
         SparkSession.builder.config("spark.driver.memory", str(mem_gb) + "G")
         .master("local[" + str(num_cores) + "]")
-        .appName("cc2dataset")
+        .appName("image_text_pairs")
         .getOrCreate()
     )
     return spark
@@ -159,7 +165,7 @@ def get_filtered_captions(
     n_largest=10,
 ):
 
-    spark = local_session()
+    spark = local_session(num_cores=16, mem_gb=32)
 
     filename = "/home/siddhesh1793/data/bild/00000_url_to_text.parquet"
     image_link_to_surrounding_text = get_image_link_to_surrounding_text(filename)
@@ -169,7 +175,6 @@ def get_filtered_captions(
     data = [(tup[1], tup[2]) for tup in image_link_to_surrounding_text.itertuples()]
     image_to_text_rdd = sc.parallelize(data, num_rows)
 
-    # Get filtered candidates
     ngrams_func = partial(generate_n_grams, ngram_range=ngram_range)
     perp_func = partial(
         perplexity_filter_func, models=lang_to_perplexity_models, n_largest=n_largest
@@ -181,12 +186,21 @@ def get_filtered_captions(
         ngrams_filter_func=ngrams_filter,
         perplexity_filter_func=perp_func,
     )
-    output = image_to_text_rdd.mapPartitions(link_processing_func)
 
-    # output = output.collect()
+    # Create image to captions df
+    image_to_candidate_caps_rdd = image_to_text_rdd.mapPartitions(link_processing_func)
 
-    df = output.toDF(['url', 'candidates'])
+    # Filter if no candidate captions
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(lambda x : len(x[2]) > 0)
 
+    df = image_to_candidate_caps_rdd.toDF(['uid', 'url', 'candidates'])
+
+    # Group by uid
+    agg_candidates = df.groupBy(["uid"]).agg(F.flatten(F.collect_list("candidates")).alias("candidates"))
+
+    df = df.join(agg_candidates, "uid", "inner").drop(df.candidates).drop_duplicates(["uid"])
+
+    # Group by uid
     import pdb
 
     pdb.set_trace()
