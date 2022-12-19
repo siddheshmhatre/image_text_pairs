@@ -1,8 +1,10 @@
 import re
+import os
 import heapq
 import hashlib
 import cld3
 import nltk
+import datetime
 import pyspark.sql.functions as F
 from functools import partial
 from model import KenlmModel
@@ -156,7 +158,12 @@ def local_session(num_cores=4, mem_gb=16):
     return spark
 
 
+def get_date_str():
+    return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
+
 def get_filtered_captions(
+    output_path,
     ngram_range=(3, 20),
     tokenize_sentences=tokenize_sentences,
     ngrams_filter=entity_filter,
@@ -164,14 +171,19 @@ def get_filtered_captions(
     lang_to_perplexity_models={},
     n_largest=10,
 ):
-
     spark = local_session(num_cores=16, mem_gb=32)
+
+    job_id = get_date_str()
+
+    output_path = os.path.join(output_path, job_id)
 
     filename = "/home/siddhesh1793/data/bild/00000_url_to_text.parquet"
     image_link_to_surrounding_text = get_image_link_to_surrounding_text(filename)
 
     sc = SparkContext.getOrCreate()
     num_rows = image_link_to_surrounding_text.shape[0]
+
+    print (f"Number of rows : {num_rows}")
     data = [(tup[1], tup[2]) for tup in image_link_to_surrounding_text.itertuples()]
     image_to_text_rdd = sc.parallelize(data, num_rows)
 
@@ -200,14 +212,11 @@ def get_filtered_captions(
 
     df = df.join(agg_candidates, "uid", "inner").drop(df.candidates).drop_duplicates(["uid"])
 
-    # Group by uid
-    import pdb
-
-    pdb.set_trace()
-
+    # Write to disk
+    df.write.parquet(output_path)
 
 if __name__ == "__main__":
 
     lang_to_perp_model = {"en": KenlmModel.from_pretrained("wikipedia", "en")}
 
-    get_filtered_captions(lang_to_perplexity_models=lang_to_perp_model)
+    get_filtered_captions(output_path="~/data/bild/image_text_pairs", lang_to_perplexity_models=lang_to_perp_model)
