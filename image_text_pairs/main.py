@@ -1,5 +1,4 @@
 import re
-import fire
 import os
 import heapq
 import hashlib
@@ -215,7 +214,7 @@ def get_filtered_captions(
     df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
 
     # Group by uid
-    agg_candidates = df.groupBy(["uid"]).agg(
+    agg_candidates = df.groupBy(["url"]).agg(
         F.flatten(F.collect_list("candidates")).alias("candidates")
     )
 
