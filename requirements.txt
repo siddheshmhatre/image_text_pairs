@@ -12,3 +12,7 @@ fsspec
 fastwarc
 resiliparse
 loguru
+requests
+aiohttp
+black
+s3fs

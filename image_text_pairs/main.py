@@ -26,10 +26,9 @@ from loguru import logger
 from timeit import default_timer as timer
 
 SEPERATOR = "###img###sep###"
-nltk_download = False
 
-# TODO - clean this up
-if nltk_download:
+
+def dowload_nltk():
     nltk.download("averaged_perceptron_tagger")
     nltk.download("punkt")
     nltk.download("wordnet")
@@ -174,20 +173,26 @@ def get_date_str():
     return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
 
-def get_cc_warc_links():
-    fs, p = fsspec.core.url_to_fs("https://commoncrawl.org/the-data/get-started/")
-    a = fs.open(p).read()
-    l = a.splitlines()
-    l = [e.decode("utf8").replace("[WARC] ", "") for e in l]
-    l = [e for e in l if "<li>s3://commoncrawl/crawl-data/" in e]
-    l = [
-        e.split(" ")[0]
-        .replace("<li>s3://commoncrawl/", "https://data.commoncrawl.org/")
-        .replace("<wbr>", "")
-        for e in l
-    ]
-    l = [(e + "/warc.paths.gz").replace("//warc", "/warc") for e in l]
-    return l
+def get_cc_warc_links(source_cc_protocol):
+
+    if source_cc_protocol == "http":
+        fs, p = fsspec.core.url_to_fs("https://commoncrawl.org/the-data/get-started/")
+        a = fs.open(p).read()
+        l = a.splitlines()
+        l = [e.decode("utf8").replace("[WARC] ", "") for e in l]
+        l = [e for e in l if "<li>s3://commoncrawl/crawl-data/" in e]
+        l = [
+            e.split(" ")[0]
+            .replace("<li>s3://commoncrawl/", "https://data.commoncrawl.org/")
+            .replace("<wbr>", "")
+            for e in l
+        ]
+        l = [(e + "/warc.paths.gz").replace("//warc", "/warc") for e in l]
+        return l
+    elif source_cc_protocol == "s3":
+        fs, p = fsspec.core.url_to_fs("s3://commoncrawl/crawl-data/")
+        links = ["s3://" + e for e in fs.glob(p + "/*/warc.paths.gz")]
+        return links
 
 
 def read_warc_index_file(warc_index):
@@ -198,11 +203,11 @@ def read_warc_index_file(warc_index):
 
 
 def read_warc_index_files(
-    shard_count=None, warc_count=1000, source_cc_protocol="https"
+    shard_count=None, warc_count=1000, source_cc_protocol="http"
 ):
     """Read all warc index files"""
     # Taken from https://github.com/rom1504/cc2dataset/blob/main/cc2dataset/main.py#L170
-    cc_warc_links = get_cc_warc_links()
+    cc_warc_links = get_cc_warc_links(source_cc_protocol)
     if shard_count is not None:
         cc_warc_links = cc_warc_links[
             -shard_count:
@@ -217,8 +222,10 @@ def read_warc_index_files(
         # shuffle to increase duplication over each part hence reduce size of each part after duplication
         random.shuffle(all_warcs)
 
-    if source_cc_protocol == "https":
+    if source_cc_protocol == "http":
         prefix = "https://data.commoncrawl.org/"
+    elif source_cc_protocol == "s3":
+        prefix = "s3://commoncrawl/"
 
     all_warcs = [prefix + warc_link for warc_link in all_warcs]
 
@@ -295,15 +302,15 @@ def process_warc_record(html_bytes, url, candidate_generation_func):
         yield url_hash, image_url, candidates
 
 
-def process_warc(x, candidate_generation_func):
+def process_warc(x, logging_frequency, candidate_generation_func):
     # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/pipeline_utils.py#L9
     x = list(x)
 
     warc_url = x[0]
 
-    count = 0
-
     start = timer()
+
+    records_processed = 0
 
     # Iterate through each record
     with fsspec.open(warc_url, "rb") as f:
@@ -321,7 +328,11 @@ def process_warc(x, candidate_generation_func):
                     content_type = str(record.http_content_type).lower()
 
                     if content_type.startswith("text/html"):
-                        count += 1
+
+                        records_processed += 1
+
+                        if (records_processed % logging_frequency) == 0:
+                            logger.info(f"Processing record {records_processed}")
 
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
@@ -340,6 +351,7 @@ def process_warc(x, candidate_generation_func):
 def process_one_part(
     output_path,
     warc_index_files,
+    logging_frequency,
     ngram_range=(3, 20),
     tokenize_sentences=tokenize_sentences,
     ngrams_filter=entity_filter,
@@ -372,7 +384,9 @@ def process_one_part(
         perplexity_filter_func=perp_func,
     )
     process_warc_function = partial(
-        process_warc, candidate_generation_func=candidate_generation_func
+        process_warc,
+        logging_frequency=logging_frequency,
+        candidate_generation_func=candidate_generation_func,
     )
 
     # Create image to captions df
@@ -407,11 +421,30 @@ def process_one_part(
     df.write.mode("overwrite").parquet(output_path)
 
 
-def image_text_pairs(output_path, num_shards=None, num_warcs=None, source_cc_protocol="https"):
+def image_text_pairs(
+    output_path,
+    num_shards=None,
+    num_warcs=None,
+    source_cc_protocol="http",
+    download_nltk_models=False,
+    logging_frequency=1000,
+):
+
+    if download_nltk_models:
+        dowload_nltk()
+
+    start = timer()
+
     # Read in all warc index files from cc
     warc_index_files = read_warc_index_files(
         num_shards, num_warcs, source_cc_protocol=source_cc_protocol
     )
 
+    logger.info(f"Processing {len(warc_index_files)} warcs")
+
     # Create map from url to potential captions
-    process_one_part(output_path, warc_index_files)
+    process_one_part(output_path, warc_index_files, logging_frequency=logging_frequency)
+
+    end = timer()
+
+    logger.info(f"{num_warcs} took {end - start}")
