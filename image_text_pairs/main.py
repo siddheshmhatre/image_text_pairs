@@ -22,6 +22,8 @@ from resiliparse.parse.html import HTMLTree
 from resiliparse.extract.html2text import extract_plain_text
 from urllib.parse import urljoin
 from collections import OrderedDict
+from loguru import logger
+from timeit import default_timer as timer
 
 SEPERATOR = "###img###sep###"
 nltk_download = False
@@ -299,6 +301,10 @@ def process_warc(x, candidate_generation_func):
 
     warc_url = x[0]
 
+    count = 0
+
+    start = timer()
+
     # Iterate through each record
     with fsspec.open(warc_url, "rb") as f:
         stream = BytesIO(f.read())
@@ -315,6 +321,8 @@ def process_warc(x, candidate_generation_func):
                     content_type = str(record.http_content_type).lower()
 
                     if content_type.startswith("text/html"):
+                        count += 1
+
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
                         for url_hash, image_url, candidates in process_warc_record(
@@ -323,7 +331,10 @@ def process_warc(x, candidate_generation_func):
                             yield url_hash, image_url, candidates
 
             except Exception as e:
-                print(e)
+                logger.info(e)
+
+    end = timer()
+    logger.info(f"Time to proces one WARC : {end - start}")
 
 
 def process_one_part(
@@ -339,6 +350,9 @@ def process_one_part(
     # Create output path
     job_id = get_date_str()
     output_path = os.path.join(output_path, job_id)
+
+    # Create spark session
+    spark = local_session(num_cores=16, mem_gb=32)
 
     # Create spark context
     sc = SparkContext.getOrCreate()
@@ -371,9 +385,6 @@ def process_one_part(
         lambda x: len(x[2]) > 0
     )
 
-    # Create spark session
-    spark = local_session(num_cores=16, mem_gb=32)
-
     # Convert to df
     df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
 
@@ -383,22 +394,24 @@ def process_one_part(
     )
 
     df = (
-        df.join(agg_candidates, "uid", "inner")
+        df.join(agg_candidates, "url", "inner")
         .drop(df.candidates)
         .drop_duplicates(["uid"])
     )
 
-    print(f"Writing to {output_path}")
+    logger.info(f"Writing to {output_path}")
+
+    df = df.repartition(max(256, len(warc_index_files)))
 
     # Write to disk
-    df.write.parquet(output_path)
+    df.write.mode("overwrite").parquet(output_path)
 
 
-def image_text_pairs(num_shards=None, num_warcs=None, source_cc_protocol="https"):
+def image_text_pairs(output_path, num_shards=None, num_warcs=None, source_cc_protocol="https"):
     # Read in all warc index files from cc
     warc_index_files = read_warc_index_files(
         num_shards, num_warcs, source_cc_protocol=source_cc_protocol
     )
 
     # Create map from url to potential captions
-    process_one_part(warc_index_files)
+    process_one_part(output_path, warc_index_files)

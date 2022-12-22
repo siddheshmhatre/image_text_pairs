@@ -11,3 +11,4 @@ pyarrow
 fsspec
 fastwarc
 resiliparse
+loguru
