@@ -1,17 +1,27 @@
 import re
 import os
 import heapq
+import fsspec
 import hashlib
+import random
 import cld3
 import nltk
 import datetime
+import pandas as pd
 import pyspark.sql.functions as F
+
 from functools import partial
 from .model import KenlmModel
 from pyspark.sql import SparkSession
-import pandas as pd
-
+from multiprocessing.pool import ThreadPool
 from pyspark import SparkContext
+from fastwarc import ArchiveIterator
+from io import BytesIO
+from resiliparse.parse import detect_encoding
+from resiliparse.parse.html import HTMLTree
+from resiliparse.extract.html2text import extract_plain_text
+from urllib.parse import urljoin
+from collections import OrderedDict
 
 SEPERATOR = "###img###sep###"
 nltk_download = False
@@ -116,12 +126,15 @@ def perplexity_filter(ngrams, language, models, n_largest):
 
 
 def image_link_to_caption_candidates(
-    x, tokenize_sentences_func, ngrams_func, ngrams_filter_func, perplexity_filter_func
+    before_text,
+    after_text,
+    tokenize_sentences_func,
+    ngrams_func,
+    ngrams_filter_func,
+    perplexity_filter_func,
 ):
-    x = list(list(x)[0])
-
     candidates = []
-    for text in get_before_after_text(x[1]):
+    for text in [before_text, after_text]:
         # Detect language
         language = cld3.get_language(text)
 
@@ -141,10 +154,7 @@ def image_link_to_caption_candidates(
 
             candidates.extend(filtered_n_grams)
 
-    # Create hash of image url to deduplicate
-    url_hash = hashlib.md5(x[0].encode()).hexdigest()
-
-    yield (url_hash, x[0], candidates)
+    return candidates
 
 
 def local_session(num_cores=4, mem_gb=16):
@@ -162,8 +172,163 @@ def get_date_str():
     return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
 
-def get_filtered_captions(
+def get_cc_warc_links():
+    fs, p = fsspec.core.url_to_fs("https://commoncrawl.org/the-data/get-started/")
+    a = fs.open(p).read()
+    l = a.splitlines()
+    l = [e.decode("utf8").replace("[WARC] ", "") for e in l]
+    l = [e for e in l if "<li>s3://commoncrawl/crawl-data/" in e]
+    l = [
+        e.split(" ")[0]
+        .replace("<li>s3://commoncrawl/", "https://data.commoncrawl.org/")
+        .replace("<wbr>", "")
+        for e in l
+    ]
+    l = [(e + "/warc.paths.gz").replace("//warc", "/warc") for e in l]
+    return l
+
+
+def read_warc_index_file(warc_index):
+    with fsspec.open(warc_index, "rb", compression="gzip") as f:
+        warcs = [a.decode("utf8").strip() for a in f.readlines()]
+
+    return warcs
+
+
+def read_warc_index_files(
+    shard_count=None, warc_count=1000, source_cc_protocol="https"
+):
+    """Read all warc index files"""
+    # Taken from https://github.com/rom1504/cc2dataset/blob/main/cc2dataset/main.py#L170
+    cc_warc_links = get_cc_warc_links()
+    if shard_count is not None:
+        cc_warc_links = cc_warc_links[
+            -shard_count:
+        ]  # pylint: disable=invalid-unary-operand-type
+    all_warcs = []
+    with ThreadPool(16) as pool:
+        for wats in pool.imap_unordered(read_warc_index_file, cc_warc_links):
+            all_warcs.extend(wats)
+    if warc_count is not None:
+        all_warcs = random.choices(all_warcs, k=warc_count)
+    else:
+        # shuffle to increase duplication over each part hence reduce size of each part after duplication
+        random.shuffle(all_warcs)
+
+    if source_cc_protocol == "https":
+        prefix = "https://data.commoncrawl.org/"
+
+    all_warcs = [prefix + warc_link for warc_link in all_warcs]
+
+    return all_warcs
+
+
+def get_images_and_surrounding_text(text, images_to_url, candidate_generation_func):
+    # Get start and end indices of every image tag in text
+    # Hack think more about this
+    image_to_idxs = OrderedDict()
+    for image_name in images_to_url.keys():
+        if image_name in text:
+            image_to_idxs[image_name] = re.search(image_name, text).span()
+
+    last_end = 0
+    image_links_and_surrounding_text = []
+    # For every image
+    for idx, (img_name, img_span) in enumerate(image_to_idxs.items()):
+
+        # get text before and text after image
+        start, end = img_span
+
+        before_text = text[last_end:start]
+        last_end = end
+
+        if idx == (len(image_to_idxs) - 1):
+            after_text = text[end:]
+        else:
+            next_img_name = list(image_to_idxs.keys())[idx + 1]
+            after_text = text[end : image_to_idxs[next_img_name][0]]
+
+        url = images_to_url[img_name]
+
+        image_links_and_surrounding_text.append((url, before_text, after_text))
+
+    for image_url, before_text, after_text in image_links_and_surrounding_text:
+        # Create hash of image url to deduplicate
+        url_hash = hashlib.md5(image_url.encode()).hexdigest()
+
+        yield (url_hash, image_url, candidate_generation_func(before_text, after_text))
+
+
+def process_warc_record(html_bytes, url, candidate_generation_func):
+    # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/extraction_utils.py#L10
+    encoding = detect_encoding(html_bytes)
+    tree = HTMLTree.parse_from_bytes(html_bytes, encoding)
+    image_count = 0
+    images_to_url = {}
+
+    for ele in tree.body.get_elements_by_tag_name("nav"):
+        ele.parent.remove_child(ele)
+
+    # Get all image links and surrounding text
+    for ele in tree.body.get_elements_by_tag_name("img"):
+        csrc = ele.getattr("src")
+        images_to_url[f"###img###{image_count}###"] = urljoin(url, csrc)
+        ele.setattr("alt", f"###img###{image_count}###")
+        image_count += 1
+
+    text = extract_plain_text(
+        tree,
+        preserve_formatting=False,
+        main_content=False,
+        list_bullets=False,
+        alt_texts=True,
+        links=False,
+        form_fields=False,
+        noscript=False,
+    )
+
+    for url_hash, image_url, candidates in get_images_and_surrounding_text(
+        text, images_to_url, candidate_generation_func
+    ):
+        yield url_hash, image_url, candidates
+
+
+def process_warc(x, candidate_generation_func):
+    # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/pipeline_utils.py#L9
+    x = list(x)
+
+    warc_url = x[0]
+
+    # Iterate through each record
+    with fsspec.open(warc_url, "rb") as f:
+        stream = BytesIO(f.read())
+        for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+            try:
+                if record.headers is None:
+                    continue
+                if record.http_headers is None:
+                    continue
+                if (
+                    record.headers["WARC-Type"] == "response"
+                    and record.content_length >= 128
+                ):
+                    content_type = str(record.http_content_type).lower()
+
+                    if content_type.startswith("text/html"):
+                        url = str(record.headers["WARC-Target-URI"])
+                        html_bytes = record.reader.read()
+                        for url_hash, image_url, candidates in process_warc_record(
+                            html_bytes, url, candidate_generation_func
+                        ):
+                            yield url_hash, image_url, candidates
+
+            except Exception as e:
+                print(e)
+
+
+def process_one_part(
     output_path,
+    warc_index_files,
     ngram_range=(3, 20),
     tokenize_sentences=tokenize_sentences,
     ngrams_filter=entity_filter,
@@ -171,49 +336,48 @@ def get_filtered_captions(
     lang_to_perplexity_models={"en": KenlmModel.from_pretrained("wikipedia", "en")},
     n_largest=10,
 ):
-    spark = local_session(num_cores=16, mem_gb=32)
-
+    # Create output path
     job_id = get_date_str()
-
     output_path = os.path.join(output_path, job_id)
 
-    ### TODO - remove ####
-    filename = "../examples/00000_url_to_text.parquet"
-    filename = os.path.join(os.path.dirname(__file__), filename)
-    ### TODO - remove ####
-
-    image_link_to_surrounding_text = get_image_link_to_surrounding_text(filename)
-
+    # Create spark context
     sc = SparkContext.getOrCreate()
-    num_rows = image_link_to_surrounding_text.shape[0]
 
-    print(f"Number of rows : {num_rows}")
-    data = [(tup[1], tup[2]) for tup in image_link_to_surrounding_text.itertuples()]
-    image_to_text_rdd = sc.parallelize(data, num_rows)
+    # Extract image links and candidate captions from warc index files
+    warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
 
     ngrams_func = partial(generate_n_grams, ngram_range=ngram_range)
     perp_func = partial(
         perplexity_filter_func, models=lang_to_perplexity_models, n_largest=n_largest
     )
-    link_processing_func = partial(
+    candidate_generation_func = partial(
         image_link_to_caption_candidates,
         tokenize_sentences_func=tokenize_sentences,
         ngrams_func=ngrams_func,
         ngrams_filter_func=ngrams_filter,
         perplexity_filter_func=perp_func,
     )
+    process_warc_function = partial(
+        process_warc, candidate_generation_func=candidate_generation_func
+    )
 
     # Create image to captions df
-    image_to_candidate_caps_rdd = image_to_text_rdd.mapPartitions(link_processing_func)
+    image_to_candidate_caps_rdd = warc_index_files_rdd.mapPartitions(
+        process_warc_function
+    )
 
     # Filter if no candidate captions
     image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
         lambda x: len(x[2]) > 0
     )
 
+    # Create spark session
+    spark = local_session(num_cores=16, mem_gb=32)
+
+    # Convert to df
     df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
 
-    # Group by uid
+    # Groupby by url
     agg_candidates = df.groupBy(["url"]).agg(
         F.flatten(F.collect_list("candidates")).alias("candidates")
     )
@@ -228,3 +392,13 @@ def get_filtered_captions(
 
     # Write to disk
     df.write.parquet(output_path)
+
+
+def image_text_pairs(num_shards=None, num_warcs=None, source_cc_protocol="https"):
+    # Read in all warc index files from cc
+    warc_index_files = read_warc_index_files(
+        num_shards, num_warcs, source_cc_protocol=source_cc_protocol
+    )
+
+    # Create map from url to potential captions
+    process_one_part(warc_index_files)

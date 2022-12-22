@@ -8,3 +8,6 @@ kenlm
 sentencepiece
 huggingface_hub
 pyarrow
+fsspec
+fastwarc
+resiliparse
