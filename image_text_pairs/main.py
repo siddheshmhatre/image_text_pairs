@@ -430,6 +430,8 @@ def image_text_pairs(
     logging_frequency=1000,
 ):
 
+    logger.info(locals())
+
     if download_nltk_models:
         dowload_nltk()
 
