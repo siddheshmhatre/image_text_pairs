@@ -351,6 +351,8 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 def process_one_part(
     output_path,
     warc_index_files,
+    num_cores,
+    mem_gb,
     logging_frequency,
     ngram_range=(3, 20),
     tokenize_sentences=tokenize_sentences,
@@ -364,7 +366,7 @@ def process_one_part(
     output_path = os.path.join(output_path, job_id)
 
     # Create spark session
-    spark = local_session(num_cores=16, mem_gb=32)
+    spark = local_session(num_cores=num_cores, mem_gb=mem_gb)
 
     # Create spark context
     sc = SparkContext.getOrCreate()
@@ -428,6 +430,8 @@ def image_text_pairs(
     source_cc_protocol="http",
     download_nltk_models=False,
     logging_frequency=1000,
+    num_cores=32,
+    mem_gb=64
 ):
 
     logger.info(locals())
@@ -445,7 +449,7 @@ def image_text_pairs(
     logger.info(f"Processing {len(warc_index_files)} warcs")
 
     # Create map from url to potential captions
-    process_one_part(output_path, warc_index_files, logging_frequency=logging_frequency)
+    process_one_part(output_path, warc_index_files, num_cores, mem_gb, logging_frequency=logging_frequency)
 
     end = timer()
 
