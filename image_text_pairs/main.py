@@ -127,15 +127,15 @@ def perplexity_filter(ngrams, language, models, n_largest):
 
 
 def image_link_to_caption_candidates(
-    before_text,
-    after_text,
+    x
     tokenize_sentences_func,
     ngrams_func,
     ngrams_filter_func,
     perplexity_filter_func,
 ):
+    x = list(x)
     candidates = []
-    for text in [before_text, after_text]:
+    for text in [x[2]]:
         # Detect language
         language = cld3.get_language(text)
 
@@ -155,7 +155,7 @@ def image_link_to_caption_candidates(
 
             candidates.extend(filtered_n_grams)
 
-    return candidates
+    yield x[0], x[1], candidates
 
 
 def local_session(num_cores=4, mem_gb=16):
@@ -232,7 +232,7 @@ def read_warc_index_files(
     return all_warcs
 
 
-def get_images_and_surrounding_text(text, images_to_url, candidate_generation_func):
+def get_images_and_surrounding_text(text, images_to_url):
     # Get start and end indices of every image tag in text
     # Hack think more about this
     image_to_idxs = OrderedDict()
@@ -265,10 +265,10 @@ def get_images_and_surrounding_text(text, images_to_url, candidate_generation_fu
         # Create hash of image url to deduplicate
         url_hash = hashlib.md5(image_url.encode()).hexdigest()
 
-        yield (url_hash, image_url, candidate_generation_func(before_text, after_text))
+        yield (url_hash, image_url, [before_text, after_text])
 
 
-def process_warc_record(html_bytes, url, candidate_generation_func):
+def process_warc_record(html_bytes, url):
     # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/extraction_utils.py#L10
     encoding = detect_encoding(html_bytes)
     tree = HTMLTree.parse_from_bytes(html_bytes, encoding)
@@ -297,7 +297,7 @@ def process_warc_record(html_bytes, url, candidate_generation_func):
     )
 
     for url_hash, image_url, candidates in get_images_and_surrounding_text(
-        text, images_to_url, candidate_generation_func
+        text, images_to_url
     ):
         yield url_hash, image_url, candidates
 
@@ -387,14 +387,14 @@ def process_one_part(
     )
     process_warc_function = partial(
         process_warc,
-        logging_frequency=logging_frequency,
-        candidate_generation_func=candidate_generation_func,
-    )
+        logging_frequency=logging_frequency)
 
-    # Create image to captions df
+    # Create image to before text; after text df
     image_to_candidate_caps_rdd = warc_index_files_rdd.mapPartitions(
         process_warc_function
     )
+
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
 
     # Filter if no candidate captions
     image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
