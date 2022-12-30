@@ -141,6 +141,7 @@ def image_link_to_caption_candidates(
 
         if language is not None:
             language = language.language
+
             # Tokenize sentences
             sentences = tokenize_sentences_func(text, language)
 
@@ -337,6 +338,9 @@ def process_warc(x, logging_frequency):
                         if (records_processed % logging_frequency) == 0:
                             logger.info(f"Processing record {records_processed}")
 
+                        if records_processed >= 1000:
+                            break
+
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
                         for url_hash, image_url, candidates in process_warc_record(
@@ -403,15 +407,23 @@ def process_one_part(
     # op1 = image_to_candidate_caps_rdd.glom().collect()
     # import pdb; pdb.set_trace()
 
-    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
+    #data = image_to_candidate_caps_rdd.collect()
+
+    #for idx, dat in enumerate(data):
+    #    import pdb; pdb.set_trace()
+    #    #for text in dat[2]:
+    #    #    if type(text) == str:
+    #    #        import pdb; pdb.set_trace()
+
+    image_to_candidate_caps_rdd2 = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
 
     # Filter if no candidate captions
-    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
+    image_to_candidate_caps_rdd_filt = image_to_candidate_caps_rdd2.filter(
         lambda x: len(x[2]) > 0
     )
 
     # Convert to df
-    df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
+    df = image_to_candidate_caps_rdd_filt.toDF(["uid", "url", "candidates"])
 
     # Groupby by url
     agg_candidates = df.groupBy(["url"]).agg(
