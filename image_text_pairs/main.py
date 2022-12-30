@@ -336,6 +336,7 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
+
                         for url_hash, image_url, candidates in process_warc_record(
                             html_bytes, url, candidate_generation_func
                         ):
