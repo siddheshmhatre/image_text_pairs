@@ -343,7 +343,7 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
                             records_processed += 1
 
-                            if records_processed >= 10000 == 0:
+                            if records_processed >= 10 == 0:
                                 break
 
                             if (records_processed % logging_frequency) == 0:
