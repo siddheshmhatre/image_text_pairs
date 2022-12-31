@@ -314,35 +314,53 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
     # Iterate through each record
     with fsspec.open(warc_url, "rb") as f:
-        stream = BytesIO(f.read())
-        for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+        for i in range(10):
             try:
-                if record.headers is None:
-                    continue
-                if record.http_headers is None:
-                    continue
-                if (
-                    record.headers["WARC-Type"] == "response"
-                    and record.content_length >= 128
-                ):
-                    content_type = str(record.http_content_type).lower()
-
-                    if content_type.startswith("text/html"):
-
-                        records_processed += 1
-
-                        if (records_processed % logging_frequency) == 0:
-                            logger.info(f"Processing record {records_processed}")
-
-                        url = str(record.headers["WARC-Target-URI"])
-                        html_bytes = record.reader.read()
-                        for url_hash, image_url, candidates in process_warc_record(
-                            html_bytes, url, candidate_generation_func
-                        ):
-                            yield url_hash, image_url, candidates
-
+                stream = BytesIO(f.read())
+                break
             except Exception as e:
+                if i == 9:
+                    logger.info("failed 10 times, skipping ", path)
+                    return
                 logger.info(e)
+                logger.info(f"retrying reading {i}/10")
+                time.sleep(1)
+
+        try:
+            for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+                try:
+                    if record.headers is None:
+                        continue
+                    if record.http_headers is None:
+                        continue
+                    if (
+                        record.headers["WARC-Type"] == "response"
+                        and record.content_length >= 128
+                    ):
+                        content_type = str(record.http_content_type).lower()
+
+                        if content_type.startswith("text/html"):
+
+                            records_processed += 1
+
+                            if records_processed >= 10000 == 0:
+                                break
+
+                            if (records_processed % logging_frequency) == 0:
+                                logger.info(f"Processing record {records_processed}")
+
+                            url = str(record.headers["WARC-Target-URI"])
+                            html_bytes = record.reader.read()
+                            for url_hash, image_url, candidates in process_warc_record(
+                                html_bytes, url, candidate_generation_func
+                            ):
+                                yield url_hash, image_url, candidates
+
+                except Exception as e:
+                    logger.info("Unable to process warc", e)
+
+        except Exception as e:
+            logger.info("Processing warc failed", e)
 
     end = timer()
     logger.info(f"Time to proces one WARC : {end - start}")
@@ -453,4 +471,4 @@ def image_text_pairs(
 
     end = timer()
 
-    logger.info(f"{num_warcs} took {end - start}")
+    logger.info(f"{num_warcs} num warcs took took {end - start}")
