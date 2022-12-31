@@ -343,7 +343,7 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
                             records_processed += 1
 
-                            if records_processed >= 10 == 0:
+                            if records_processed >= 10000:
                                 break
 
                             if (records_processed % logging_frequency) == 0:
@@ -357,10 +357,10 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                                 yield url_hash, image_url, candidates
 
                 except Exception as e:
-                    logger.info("Unable to process warc", e)
+                    logger.info(f"Unable to process warc {e}")
 
         except Exception as e:
-            logger.info("Processing warc failed", e)
+            logger.info(f"Processing warc failed {e}")
 
     end = timer()
     logger.info(f"Time to proces one WARC : {end - start}")
