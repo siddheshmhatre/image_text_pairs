@@ -127,15 +127,15 @@ def perplexity_filter(ngrams, language, models, n_largest):
 
 
 def image_link_to_caption_candidates(
-    x
+    x,
     tokenize_sentences_func,
     ngrams_func,
     ngrams_filter_func,
     perplexity_filter_func,
 ):
-    x = list(x)
     candidates = []
-    for text in [x[2]]:
+    x = list(x)[0]
+    for text in x[2]:
         # Detect language
         language = cld3.get_language(text)
 
@@ -302,7 +302,7 @@ def process_warc_record(html_bytes, url):
         yield url_hash, image_url, candidates
 
 
-def process_warc(x, logging_frequency, candidate_generation_func):
+def process_warc(x, logging_frequency):
     # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/pipeline_utils.py#L9
     x = list(x)
 
@@ -331,13 +331,16 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
                         records_processed += 1
 
+                        if records_processed > 10000:
+                            break
+
                         if (records_processed % logging_frequency) == 0:
                             logger.info(f"Processing record {records_processed}")
 
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
                         for url_hash, image_url, candidates in process_warc_record(
-                            html_bytes, url, candidate_generation_func
+                            html_bytes, url
                         ):
                             yield url_hash, image_url, candidates
 
@@ -371,9 +374,6 @@ def process_one_part(
     # Create spark context
     sc = SparkContext.getOrCreate()
 
-    # Extract image links and candidate captions from warc index files
-    warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
-
     ngrams_func = partial(generate_n_grams, ngram_range=ngram_range)
     perp_func = partial(
         perplexity_filter_func, models=lang_to_perplexity_models, n_largest=n_largest
@@ -389,10 +389,19 @@ def process_one_part(
         process_warc,
         logging_frequency=logging_frequency)
 
+    # Extract image links and candidate captions from warc index files
+    warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
+
     # Create image to before text; after text df
     image_to_candidate_caps_rdd = warc_index_files_rdd.mapPartitions(
         process_warc_function
     )
+
+    # image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.repartition(image_to_candidate_caps_rdd.count())
+    image_to_candidate_caps = image_to_candidate_caps_rdd.collect()
+    image_to_candidate_caps_rdd = sc.parallelize(image_to_candidate_caps, len(image_to_candidate_caps)) 
+    # op1 = image_to_candidate_caps_rdd.glom().collect()
+    # import pdb; pdb.set_trace()
 
     image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
 
