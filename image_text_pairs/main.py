@@ -332,14 +332,14 @@ def process_warc(x, logging_frequency):
 
                         records_processed += 1
 
-                        if records_processed > 10000:
-                            break
+                        #if records_processed > 10000:
+                        #    break
 
                         if (records_processed % logging_frequency) == 0:
                             logger.info(f"Processing record {records_processed}")
 
-                        if records_processed >= 1000:
-                            break
+                        #if records_processed >= 1000:
+                        #    break
 
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
