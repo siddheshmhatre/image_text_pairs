@@ -343,7 +343,7 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
                             records_processed += 1
 
-                            if records_processed >= 10000:
+                            if records_processed >= 20000:
                                 break
 
                             if (records_processed % logging_frequency) == 0:
@@ -390,58 +390,63 @@ def process_one_part(
     sc = SparkContext.getOrCreate()
 
     # Extract image links and candidate captions from warc index files
-    #warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
+    warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
 
-    #ngrams_func = partial(generate_n_grams, ngram_range=ngram_range)
-    #perp_func = partial(
-    #    perplexity_filter_func, models=lang_to_perplexity_models, n_largest=n_largest
-    #)
-    #candidate_generation_func = partial(
-    #    image_link_to_caption_candidates,
-    #    tokenize_sentences_func=tokenize_sentences,
-    #    ngrams_func=ngrams_func,
-    #    ngrams_filter_func=ngrams_filter,
-    #    perplexity_filter_func=perp_func,
-    #)
-    #process_warc_function = partial(
-    #    process_warc,
-    #    logging_frequency=logging_frequency,
-    #    candidate_generation_func=candidate_generation_func,
-    #)
+    ngrams_func = partial(generate_n_grams, ngram_range=ngram_range)
+    perp_func = partial(
+        perplexity_filter_func, models=lang_to_perplexity_models, n_largest=n_largest
+    )
+    candidate_generation_func = partial(
+        image_link_to_caption_candidates,
+        tokenize_sentences_func=tokenize_sentences,
+        ngrams_func=ngrams_func,
+        ngrams_filter_func=ngrams_filter,
+        perplexity_filter_func=perp_func,
+    )
+    process_warc_function = partial(
+        process_warc,
+        logging_frequency=logging_frequency,
+        candidate_generation_func=candidate_generation_func,
+    )
 
-    ## Create image to captions df
-    #image_to_candidate_caps_rdd = warc_index_files_rdd.mapPartitions(
-    #    process_warc_function
-    #)
+    # Create image to captions df
+    image_to_candidate_caps_rdd = warc_index_files_rdd.mapPartitions(
+        process_warc_function
+    )
 
-    ## Filter if no candidate captions
-    #image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
-    #    lambda x: len(x[2]) > 0
-    #)
+    # Filter if no candidate captions
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
+        lambda x: len(x[2]) > 0
+    )
 
-    ## Convert to df
-    #df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
+    # Convert to df
+    df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
 
-    #df.cache()
+    df.cache()
 
     #df.write.mode("overwrite").parquet(output_path)
 
-    df = spark.read.parquet('/fsx/home-siddhesh1793/data/image_text_pairs/2023-01-04-19-38-33')
+    # df = spark.read.parquet('/fsx/home-siddhesh1793/data/image_text_pairs/2023-01-04-19-38-33')
+
+    print (f"Num partitions of df before{df.rdd.getNumPartitions()}")
 
     # Groupby by url
     agg_candidates = df.groupBy(["url"]).agg(
         F.flatten(F.collect_list("candidates")).alias("candidates")
     )
 
+    print (f"Num partitions of agg_cands {agg_candidates.rdd.getNumPartitions()}")
+
     df = (
         df.join(agg_candidates, "url", "inner")
         .drop(df.candidates)
         .drop_duplicates(["uid"])
     )
+    print (f"Num partitions of df after {df.rdd.getNumPartitions()}")
 
     logger.info(f"Writing to {output_path}")
 
-    df = df.repartition(max(256, 10))
+    df = df.repartition(max(256, len(warc_index_files)))
 
     # Write to disk
     df.write.mode("overwrite").parquet(output_path)
@@ -466,15 +471,15 @@ def image_text_pairs(
     start = timer()
 
     # Read in all warc index files from cc
-    #warc_index_files = read_warc_index_files(
-    #    num_shards, num_warcs, source_cc_protocol=source_cc_protocol
-    #)
+    warc_index_files = read_warc_index_files(
+        num_shards, num_warcs, source_cc_protocol=source_cc_protocol
+    )
 
-    # logger.info(f"Processing {len(warc_index_files)} warcs")
+    logger.info(f"Processing {len(warc_index_files)} warcs")
 
     # Create map from url to potential captions
-    process_one_part(output_path, [], num_cores, mem_gb, logging_frequency=logging_frequency)
+    process_one_part(output_path, warc_index_files, num_cores, mem_gb, logging_frequency=logging_frequency)
 
     end = timer()
 
-    # logger.info(f"{num_warcs} num warcs took took {end - start}")
+    logger.info(f"{num_warcs} num warcs took took {end - start}")
