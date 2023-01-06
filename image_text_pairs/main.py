@@ -343,7 +343,7 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
                             records_processed += 1
 
-                            if records_processed >= 20000:
+                            if records_processed >= 100:
                                 break
 
                             if (records_processed % logging_frequency) == 0:
@@ -428,12 +428,14 @@ def process_one_part(
 
     # df = spark.read.parquet('/fsx/home-siddhesh1793/data/image_text_pairs/2023-01-04-19-38-33')
 
-    print (f"Num partitions of df before{df.rdd.getNumPartitions()}")
+    # print (f"Num partitions of df before{df.rdd.getNumPartitions()}")
 
     # Groupby by url
     agg_candidates = df.groupBy(["url"]).agg(
         F.flatten(F.collect_list("candidates")).alias("candidates")
     )
+
+    agg_candidates = agg_candidates.repartition(len(warc_index_files))
 
     print (f"Num partitions of agg_cands {agg_candidates.rdd.getNumPartitions()}")
 
