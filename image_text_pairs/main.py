@@ -134,29 +134,30 @@ def image_link_to_caption_candidates(
     perplexity_filter_func,
 ):
     candidates = []
-    x = list(x)[0]
-    for text in x[2]:
-        # Detect language
-        language = cld3.get_language(text)
+    x = list(x)
+    for item in x:
+        for text in item[2]:
+            # Detect language
+            language = cld3.get_language(text)
 
-        if language is not None:
-            language = language.language
+            if language is not None:
+                language = language.language
 
-            # Tokenize sentences
-            sentences = tokenize_sentences_func(text, language)
+                # Tokenize sentences
+                sentences = tokenize_sentences_func(text, language)
 
-            # Generate n-grams
-            n_grams = ngrams_func(sentences)
+                # Generate n-grams
+                n_grams = ngrams_func(sentences)
 
-            # Filter based on noun or adjective if english
-            filtered_n_grams = ngrams_filter_func(n_grams, language)
+                # Filter based on noun or adjective if english
+                # filtered_n_grams = ngrams_filter_func(n_grams, language)
 
-            # Filter based on perplexity
-            filtered_n_grams = perplexity_filter_func(filtered_n_grams, language)
+                # Filter based on perplexity
+                filtered_n_grams = perplexity_filter_func(n_grams, language)
 
-            candidates.extend(filtered_n_grams)
+                candidates.extend(filtered_n_grams)
 
-    yield x[0], x[1], candidates
+        yield x[0], x[1], candidates
 
 
 def local_session(num_cores=4, mem_gb=16):
@@ -332,14 +333,11 @@ def process_warc(x, logging_frequency):
 
                         records_processed += 1
 
-                        #if records_processed > 10000:
+                        #if records_processed > 10:
                         #    break
 
                         if (records_processed % logging_frequency) == 0:
                             logger.info(f"Processing record {records_processed}")
-
-                        #if records_processed >= 1000:
-                        #    break
 
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
@@ -401,9 +399,12 @@ def process_one_part(
         process_warc_function
     )
 
+    #logger.info(f"Number of paritions {image_to_candidate_caps_rdd.getNumPartitions()}")
+    #logger.info(f"Number of items per partitions {[len(op) for op in image_to_candidate_caps_rdd.glom().collect()]}")
+
     # image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.repartition(image_to_candidate_caps_rdd.count())
-    image_to_candidate_caps = image_to_candidate_caps_rdd.collect()
-    image_to_candidate_caps_rdd = sc.parallelize(image_to_candidate_caps, len(image_to_candidate_caps)) 
+    #image_to_candidate_caps = image_to_candidate_caps_rdd.collect()
+    #image_to_candidate_caps_rdd = sc.parallelize(image_to_candidate_caps, len(image_to_candidate_caps)) 
     # op1 = image_to_candidate_caps_rdd.glom().collect()
     # import pdb; pdb.set_trace()
 
@@ -415,15 +416,16 @@ def process_one_part(
     #    #    if type(text) == str:
     #    #        import pdb; pdb.set_trace()
 
-    image_to_candidate_caps_rdd2 = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
 
     # Filter if no candidate captions
-    image_to_candidate_caps_rdd_filt = image_to_candidate_caps_rdd2.filter(
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
         lambda x: len(x[2]) > 0
     )
 
     # Convert to df
-    df = image_to_candidate_caps_rdd_filt.toDF(["uid", "url", "candidates"])
+    df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
+    output = image_to_candidate_caps_rdd.collect()
 
     # Groupby by url
     agg_candidates = df.groupBy(["url"]).agg(
