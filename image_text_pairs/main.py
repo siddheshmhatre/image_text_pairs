@@ -133,9 +133,9 @@ def image_link_to_caption_candidates(
     ngrams_filter_func,
     perplexity_filter_func,
 ):
-    candidates = []
     x = list(x)
     for item in x:
+        candidates = []
         for text in item[2]:
             # Detect language
             language = cld3.get_language(text)
@@ -157,7 +157,7 @@ def image_link_to_caption_candidates(
 
                 candidates.extend(filtered_n_grams)
 
-        yield x[0], x[1], candidates
+        yield item[0], item[1], candidates
 
 
 def local_session(num_cores=4, mem_gb=16):
@@ -304,7 +304,7 @@ def process_warc_record(html_bytes, url):
         yield url_hash, image_url, candidates
 
 
-def process_warc(x, logging_frequency):
+def process_warc(x, logging_frequency, max_num_records=None):
     # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/pipeline_utils.py#L9
     x = list(x)
 
@@ -333,8 +333,8 @@ def process_warc(x, logging_frequency):
 
                         records_processed += 1
 
-                        #if records_processed > 10:
-                        #    break
+                        if (max_num_records is not None) and (records_processed > max_num_records):
+                            break
 
                         if (records_processed % logging_frequency) == 0:
                             logger.info(f"Processing record {records_processed}")
@@ -365,6 +365,7 @@ def process_one_part(
     perplexity_filter_func=perplexity_filter,
     lang_to_perplexity_models={"en": KenlmModel.from_pretrained("wikipedia", "en")},
     n_largest=10,
+    max_num_records_per_warc=None
 ):
     # Create output path
     job_id = get_date_str()
@@ -389,7 +390,8 @@ def process_one_part(
     )
     process_warc_function = partial(
         process_warc,
-        logging_frequency=logging_frequency)
+        logging_frequency=logging_frequency,
+        max_num_records=max_num_records_per_warc)
 
     # Extract image links and candidate captions from warc index files
     warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
@@ -426,6 +428,7 @@ def process_one_part(
     # Convert to df
     df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
     output = image_to_candidate_caps_rdd.collect()
+    import pdb; pdb.set_trace()
 
     # Groupby by url
     agg_candidates = df.groupBy(["url"]).agg(
@@ -454,7 +457,8 @@ def image_text_pairs(
     download_nltk_models=False,
     logging_frequency=1000,
     num_cores=32,
-    mem_gb=64
+    mem_gb=64,
+    max_num_records_per_warc=None
 ):
 
     logger.info(locals())
@@ -472,7 +476,7 @@ def image_text_pairs(
     logger.info(f"Processing {len(warc_index_files)} warcs")
 
     # Create map from url to potential captions
-    process_one_part(output_path, warc_index_files, num_cores, mem_gb, logging_frequency=logging_frequency)
+    process_one_part(output_path, warc_index_files, num_cores, mem_gb, logging_frequency=logging_frequency, max_num_records_per_warc=max_num_records_per_warc)
 
     end = timer()
 
