@@ -334,8 +334,8 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                 logger.info(f"retrying reading {i}/10")
                 time.sleep(1)
 
-        try:
-            for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+        for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+            try:
                 if record.headers is None:
                     continue
                 if record.http_headers is None:
@@ -361,8 +361,8 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                         if (records_processed % logging_frequency) == 0:
                             logger.info(f"Processing record {records_processed}")
 
-        except Exception as e:
-            logger.info(f"Unable to process record {e}")
+            except Exception as e:
+                logger.info(f"Unable to process record {e}")
 
     end = timer()
     logger.info(f"Time to proces one WARC with {records_processed} records : {end - start}")
