@@ -1,5 +1,6 @@
 import re
 import os
+import time
 import heapq
 import fsspec
 import hashlib
@@ -157,7 +158,8 @@ def image_link_to_caption_candidates(
 
                 candidates.extend(filtered_n_grams)
 
-        yield item[0], item[1], candidates
+        if len(candidates) > 0:
+            yield item[0], item[1], candidates
 
 
 def local_session(num_cores=4, mem_gb=16):
@@ -199,7 +201,17 @@ def get_cc_warc_links(source_cc_protocol):
 
 def read_warc_index_file(warc_index):
     with fsspec.open(warc_index, "rb", compression="gzip") as f:
-        warcs = [a.decode("utf8").strip() for a in f.readlines()]
+        for i in range(10):
+            try:
+                warcs = [a.decode("utf8").strip() for a in f.readlines()]
+                break
+            except Exception as e:
+                if i == 9:
+                    logger.info(f"failed 10 times skipping {warc_index}")
+                    return
+                logger.info(e)
+                logger.info(f"retrying read {i+1}/10 ")
+                time.sleep(1)
 
     return warcs
 
@@ -316,38 +328,48 @@ def process_warc(x, logging_frequency, max_num_records=None):
 
     # Iterate through each record
     with fsspec.open(warc_url, "rb") as f:
-        stream = BytesIO(f.read())
-        for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+        for i in range(10):
             try:
-                if record.headers is None:
-                    continue
-                if record.http_headers is None:
-                    continue
-                if (
-                    record.headers["WARC-Type"] == "response"
-                    and record.content_length >= 128
-                ):
-                    content_type = str(record.http_content_type).lower()
-
-                    if content_type.startswith("text/html"):
-
-                        records_processed += 1
-
-                        if (max_num_records is not None) and (records_processed > max_num_records):
-                            break
-
-                        if (records_processed % logging_frequency) == 0:
-                            logger.info(f"Processing record {records_processed}")
-
-                        url = str(record.headers["WARC-Target-URI"])
-                        html_bytes = record.reader.read()
-                        for url_hash, image_url, candidates in process_warc_record(
-                            html_bytes, url
+                stream = BytesIO(f.read())
+                for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+                    try:
+                        if record.headers is None:
+                            continue
+                        if record.http_headers is None:
+                            continue
+                        if (
+                            record.headers["WARC-Type"] == "response"
+                            and record.content_length >= 128
                         ):
-                            yield url_hash, image_url, candidates
+                            content_type = str(record.http_content_type).lower()
 
-            except Exception as e:
-                logger.info(e)
+                            if content_type.startswith("text/html"):
+                                if (records_processed % logging_frequency) == 0:
+                                    logger.info(f"Processing record {records_processed}")
+
+                                url = str(record.headers["WARC-Target-URI"])
+                                html_bytes = record.reader.read()
+                                for url_hash, image_url, candidates in process_warc_record(
+                                    html_bytes, url
+                                ):
+                                    yield url_hash, image_url, candidates
+
+                                records_processed += 1
+
+                                if (max_num_records is not None) and (records_processed >= max_num_records):
+                                    logger.info(f"Processed max num records {records_processed}")
+                                    break
+
+                    except Exception as e:
+                        logger.info(e)
+                break
+            except Exception as ex:
+                if i == 9:
+                    logger.info(f"failed 10 times skipping {warc_url}")
+                    return
+                logger.info(ex)
+                logger.info(f"retrying read {i+1}/10 ")
+                time.sleep(1)
 
     end = timer()
     logger.info(f"Time to proces one WARC : {end - start}")
@@ -419,27 +441,40 @@ def process_one_part(
     #    #        import pdb; pdb.set_trace()
 
     image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
+    #output = image_to_candidate_caps_rdd.glom().collect()
+    #import pdb; pdb.set_trace()
 
-    # Filter if no candidate captions
-    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
-        lambda x: len(x[2]) > 0
-    )
+    ## Filter if no candidate captions
+    #image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
+    #    lambda x: len(x[2]) > 0
+    #)
+    #output = image_to_candidate_caps_rdd.collect()
+    #import pdb; pdb.set_trace()
 
     # Convert to df
     df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
-    output = image_to_candidate_caps_rdd.collect()
-    import pdb; pdb.set_trace()
+    df.cache()
+    output1 = df.rdd.glom().collect()
+    logger.info(f"df contains {len(output1)} partitions")
 
     # Groupby by url
     agg_candidates = df.groupBy(["url"]).agg(
         F.flatten(F.collect_list("candidates")).alias("candidates")
     )
+    agg_candidates.cache()
+    output2 = agg_candidates.rdd.glom().collect()
+    logger.info(f"agg_candidates contains {len(output2)} partitions")
 
     df = (
         df.join(agg_candidates, "url", "inner")
         .drop(df.candidates)
-        .drop_duplicates(["uid"])
+        .drop_duplicates()
     )
+
+    logger.info("Calling df.collect on joined df")
+    output3 = df.rdd.glom().collect()
+    logger.info(f"df after contains {len(output3)} partitions")
+    import pdb; pdb.set_trace()
 
     logger.info(f"Writing to {output_path}")
 
