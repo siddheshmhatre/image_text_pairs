@@ -147,11 +147,8 @@ def image_link_to_caption_candidates(
             # Generate n-grams
             n_grams = ngrams_func(sentences)
 
-            # Filter based on noun or adjective if english
-            filtered_n_grams = ngrams_filter_func(n_grams, language)
-
             # Filter based on perplexity
-            filtered_n_grams = perplexity_filter_func(filtered_n_grams, language)
+            filtered_n_grams = perplexity_filter_func(n_grams, language)
 
             candidates.extend(filtered_n_grams)
 
@@ -314,9 +311,20 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
     # Iterate through each record
     with fsspec.open(warc_url, "rb") as f:
-        stream = BytesIO(f.read())
-        for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
+        for i in range(10):
             try:
+                stream = BytesIO(f.read())
+                break
+            except Exception as e:
+                if i == 9:
+                    logger.info("failed 10 times, skipping ", path)
+                    return
+                logger.info(e)
+                logger.info(f"retrying reading {i}/10")
+                time.sleep(1)
+
+        try:
+            for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
                 if record.headers is None:
                     continue
                 if record.http_headers is None:
@@ -340,10 +348,24 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                         for url_hash, image_url, candidates in process_warc_record(
                             html_bytes, url, candidate_generation_func
                         ):
-                            yield url_hash, image_url, candidates
+                            content_type = str(record.http_content_type).lower()
 
-            except Exception as e:
-                logger.info(e)
+                            if content_type.startswith("text/html"):
+
+                                records_processed += 1
+
+                                if (records_processed % logging_frequency) == 0:
+                                    logger.info(f"Processing record {records_processed}")
+
+                                url = str(record.headers["WARC-Target-URI"])
+                                html_bytes = record.reader.read()
+                                for url_hash, image_url, candidates in process_warc_record(
+                                    html_bytes, url, candidate_generation_func
+                                ):
+                                    yield url_hash, image_url, candidates
+
+                    except Exception as e:
+                        logger.info(e)
 
     end = timer()
     logger.info(f"Time to proces one WARC : {end - start}")
