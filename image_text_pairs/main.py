@@ -348,11 +348,6 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
                     if content_type.startswith("text/html"):
 
-                        records_processed += 1
-
-                        if (records_processed % logging_frequency) == 0:
-                            logger.info(f"Processing record {records_processed}")
-
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
 
@@ -361,11 +356,16 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                         ):
                             yield url_hash, image_url, candidates
 
+                        records_processed += 1
+
+                        if (records_processed % logging_frequency) == 0:
+                            logger.info(f"Processing record {records_processed}")
+
         except Exception as e:
             logger.info(f"Unable to process record {e}")
 
     end = timer()
-    logger.info(f"Time to proces one WARC : {end - start}")
+    logger.info(f"Time to proces one WARC with {records_processed} records : {end - start}")
 
 
 def process_one_part(
