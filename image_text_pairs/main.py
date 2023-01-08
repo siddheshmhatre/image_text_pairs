@@ -375,8 +375,8 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                                 ):
                                     yield url_hash, image_url, candidates
 
-                    except Exception as e:
-                        logger.info(e)
+        except Exception as e:
+            logger.info(e)
 
     end = timer()
     logger.info(f"Time to proces one WARC : {end - start}")
