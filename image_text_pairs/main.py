@@ -1,5 +1,6 @@
 import re
 import os
+import time
 import heapq
 import fsspec
 import hashlib
@@ -193,8 +194,18 @@ def get_cc_warc_links(source_cc_protocol):
 
 
 def read_warc_index_file(warc_index):
-    with fsspec.open(warc_index, "rb", compression="gzip") as f:
-        warcs = [a.decode("utf8").strip() for a in f.readlines()]
+    for i in range(10):
+        try:
+            with fsspec.open(warc_index, "rb", compression="gzip") as f:
+                warcs = [a.decode("utf8").strip() for a in f.readlines()]
+            break
+        except Exception as ex:
+            if i == 9:
+                logger.info(f"failed 10 times skipping {warc_url}")
+                return
+            logger.info(ex)
+            logger.info(f"retrying read {i+1}/10 ")
+            time.sleep(1)
 
     return warcs
 
