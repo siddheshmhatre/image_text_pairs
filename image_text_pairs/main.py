@@ -424,58 +424,22 @@ def process_one_part(
         process_warc_function
     )
 
-    #logger.info(f"Number of paritions {image_to_candidate_caps_rdd.getNumPartitions()}")
-    #logger.info(f"Number of items per partitions {[len(op) for op in image_to_candidate_caps_rdd.glom().collect()]}")
-
-    # image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.repartition(image_to_candidate_caps_rdd.count())
-    #image_to_candidate_caps = image_to_candidate_caps_rdd.collect()
-    #image_to_candidate_caps_rdd = sc.parallelize(image_to_candidate_caps, len(image_to_candidate_caps)) 
-    # op1 = image_to_candidate_caps_rdd.glom().collect()
-    # import pdb; pdb.set_trace()
-
-    #data = image_to_candidate_caps_rdd.collect()
-
-    #for idx, dat in enumerate(data):
-    #    import pdb; pdb.set_trace()
-    #    #for text in dat[2]:
-    #    #    if type(text) == str:
-    #    #        import pdb; pdb.set_trace()
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.repartition(48)
 
     image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(candidate_generation_func)
-    #output = image_to_candidate_caps_rdd.glom().collect()
-    #import pdb; pdb.set_trace()
-
-    ## Filter if no candidate captions
-    #image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
-    #    lambda x: len(x[2]) > 0
-    #)
-    #output = image_to_candidate_caps_rdd.collect()
-    #import pdb; pdb.set_trace()
 
     # Convert to df
     df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
-    #df.cache()
-    #output1 = df.rdd.glom().collect()
-    #logger.info(f"df contains {len(output1)} partitions")
+
+    df = df.repartition(max(256, len(warc_index_files)))
+    df.write.mode("overwrite").parquet(output_path)
+
+    return
 
     # Groupby by url
     df = df.groupBy(["url"]).agg(
         F.flatten(F.collect_list("candidates")).alias("candidates")
     )
-    #agg_candidates.cache()
-    #output2 = agg_candidates.rdd.glom().collect()
-    #logger.info(f"agg_candidates contains {len(output2)} partitions")
-
-    #df = (
-    #    df.join(agg_candidates, "url", "inner")
-    #    .drop(df.candidates)
-    #    .drop_duplicates()
-    #)
-
-    #logger.info("Calling df.collect on joined df")
-    #output3 = df.rdd.glom().collect()
-    #logger.info(f"df after contains {len(output3)} partitions")
-    #import pdb; pdb.set_trace()
 
     logger.info(f"Writing to {output_path}")
 
