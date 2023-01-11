@@ -373,7 +373,7 @@ def process_warc(x, logging_frequency, max_num_records=None):
                 logger.info(e)
 
     end = timer()
-    logger.info(f"Time to proces one WARC : {end - start}")
+    logger.info(f"Time to proces num records {records_processed} in one WARC : {end - start}")
 
 
 def process_one_part(
@@ -445,6 +445,8 @@ def process_one_part(
     # Write to disk
     df.write.mode("overwrite").parquet(output_path)
 
+    df = spark.read.parquet(output_path)
+    logger.info(f"Size: {df.count()}")
 
 def image_text_pairs(
     output_path,
@@ -457,6 +459,10 @@ def image_text_pairs(
     mem_gb=64,
     max_num_records_per_warc=None
 ):
+
+    # TODO -
+    # 1. Read the output of last run and do groupby etc
+    # 2. Run end to end pipeline with groupby
 
     logger.info(locals())
 
