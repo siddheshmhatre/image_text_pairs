@@ -432,9 +432,6 @@ def process_one_part(
     df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
 
     df = df.repartition(max(256, len(warc_index_files)))
-    df.write.mode("overwrite").parquet(output_path)
-
-    return
 
     # Groupby by url
     df = df.groupBy(["url"]).agg(
@@ -443,7 +440,7 @@ def process_one_part(
 
     logger.info(f"Writing to {output_path}")
 
-    df = df.repartition(max(256, len(warc_index_files)))
+    # df = df.repartition(max(256, len(warc_index_files)))
 
     # Write to disk
     df.write.mode("overwrite").parquet(output_path)
