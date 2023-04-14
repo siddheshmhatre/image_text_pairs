@@ -8,7 +8,7 @@ from requests.exceptions import HTTPError
 
 import kenlm
 import sentencepiece
-from huggingface_hub import cached_download, hf_hub_url
+from huggingface_hub import hf_hub_download #, hf_hub_url
 
 KENLM_MODEL_REPO = "edugp/kenlm"
 
@@ -182,16 +182,16 @@ class KenlmModel:
 
     def download_kenlm_model(self, model_dataset: str, language: str):
         try:
-            kenlm_model_url = hf_hub_url(
-                KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.trie.bin"
-            )
-            self.kenlm_model_dir = cached_download(kenlm_model_url)
+            #kenlm_model_url = hf_hub_url(
+            #    KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.trie.bin"
+            #)
+            self.kenlm_model_dir = hf_hub_download(KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.trie.bin")
         except HTTPError:
-            kenlm_model_url = hf_hub_url(
-                KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.bin"
-            )
-            self.kenlm_model_dir = cached_download(kenlm_model_url)
-        sentence_piece_model_url = hf_hub_url(
-            KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.sp.model"
-        )
-        self.sentence_piece_model_dir = cached_download(sentence_piece_model_url)
+            #kenlm_model_url = hf_hub_url(
+            #    KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.bin"
+            #)
+            self.kenlm_model_dir = hf_hub_download(KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.arpa.bin")
+        #sentence_piece_model_url = hf_hub_url(
+        #    KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.sp.model"
+        #)
+        self.sentence_piece_model_dir = hf_hub_download(KENLM_MODEL_REPO, filename=f"{model_dataset}/{language}.sp.model")
