@@ -47,11 +47,6 @@ def get_before_after_text(text):
     return [before_text, after_text]
 
 
-def get_image_link_to_surrounding_text(filename):
-    df = pd.read_parquet(filename)
-    return df
-
-
 def tokenize_sentences(text, language):
     if language == "en":
         sent_tokenizer = nltk.data.load("tokenizers/punkt/PY3/english.pickle")
@@ -71,39 +66,6 @@ def generate_n_grams(candidates, ngram_range):
                 n_grams.append(item)
 
     return n_grams
-
-
-def entity_filter(ngrams, language):
-    from nltk.tokenize import word_tokenize
-    from nltk.corpus import wordnet as wn
-
-    filtered_candidates = []
-
-    for item in ngrams:
-        if language == "en":
-            word_tokens = word_tokenize(item)
-            adj_present = False
-            verb_or_noun_present = False
-
-            for word in word_tokens:
-                wordtype = set()
-                for tmp in wn.synsets(word):
-                    if tmp.name().split(".")[0] == word:
-                        wordtype.add(tmp.pos())
-
-                if "a" in wordtype or "s" in wordtype:
-                    adj_present = True
-
-                if "n" in wordtype or "v" in wordtype:
-                    verb_or_noun_present = True
-
-                if adj_present and verb_or_noun_present:
-                    filtered_candidates.append(item)
-                    break
-        else:
-            filtered_candidates.append(item)
-
-    return filtered_candidates
 
 
 def perplexity_filter(ngrams, language, models, n_largest):
@@ -131,7 +93,6 @@ def image_link_to_caption_candidates(
     x,
     tokenize_sentences_func,
     ngrams_func,
-    ngrams_filter_func,
     perplexity_filter_func,
 ):
     x = list(x)
@@ -149,9 +110,6 @@ def image_link_to_caption_candidates(
 
                 # Generate n-grams
                 n_grams = ngrams_func(sentences)
-
-                # Filter based on noun or adjective if english
-                # filtered_n_grams = ngrams_filter_func(n_grams, language)
 
                 # Filter based on perplexity
                 filtered_n_grams = perplexity_filter_func(n_grams, language)
@@ -378,15 +336,11 @@ def process_one_part(
     logging_frequency,
     ngram_range=(3, 20),
     tokenize_sentences=tokenize_sentences,
-    ngrams_filter=entity_filter,
     perplexity_filter_func=perplexity_filter,
     lang_to_perplexity_models={"en": KenlmModel.from_pretrained("wikipedia", "en")},
     n_largest=10,
     max_num_records_per_warc=None,
 ):
-    import faulthandler
-
-    faulthandler.enable()
     # Create output path
     job_id = get_date_str()
     output_path = os.path.join(output_path, job_id)
@@ -405,7 +359,6 @@ def process_one_part(
         image_link_to_caption_candidates,
         tokenize_sentences_func=tokenize_sentences,
         ngrams_func=ngrams_func,
-        ngrams_filter_func=ngrams_filter,
         perplexity_filter_func=perp_func,
     )
     process_warc_function = partial(
