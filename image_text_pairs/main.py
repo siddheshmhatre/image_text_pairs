@@ -47,11 +47,6 @@ def get_before_after_text(text):
     return [before_text, after_text]
 
 
-def get_image_link_to_surrounding_text(filename):
-    df = pd.read_parquet(filename)
-    return df
-
-
 def tokenize_sentences(text, language):
     if language == "en":
         sent_tokenizer = nltk.data.load("tokenizers/punkt/PY3/english.pickle")
@@ -71,39 +66,6 @@ def generate_n_grams(candidates, ngram_range):
                 n_grams.append(item)
 
     return n_grams
-
-
-def entity_filter(ngrams, language):
-    from nltk.tokenize import word_tokenize
-    from nltk.corpus import wordnet as wn
-
-    filtered_candidates = []
-
-    for item in ngrams:
-        if language == "en":
-            word_tokens = word_tokenize(item)
-            adj_present = False
-            verb_or_noun_present = False
-
-            for word in word_tokens:
-                wordtype = set()
-                for tmp in wn.synsets(word):
-                    if tmp.name().split(".")[0] == word:
-                        wordtype.add(tmp.pos())
-
-                if "a" in wordtype or "s" in wordtype:
-                    adj_present = True
-
-                if "n" in wordtype or "v" in wordtype:
-                    verb_or_noun_present = True
-
-                if adj_present and verb_or_noun_present:
-                    filtered_candidates.append(item)
-                    break
-        else:
-            filtered_candidates.append(item)
-
-    return filtered_candidates
 
 
 def perplexity_filter(ngrams, language, models, n_largest):
@@ -128,38 +90,41 @@ def perplexity_filter(ngrams, language, models, n_largest):
 
 
 def image_link_to_caption_candidates(
-    before_text,
-    after_text,
+    x,
     tokenize_sentences_func,
     ngrams_func,
-    ngrams_filter_func,
     perplexity_filter_func,
 ):
-    candidates = []
-    for text in [before_text, after_text]:
-        # Detect language
-        language = cld3.get_language(text)
+    x = list(x)
+    for item in x:
+        candidates = []
+        for text in item[1]:
+            # Detect language
+            language = cld3.get_language(text)
 
-        if language is not None:
-            language = language.language
-            # Tokenize sentences
-            sentences = tokenize_sentences_func(text, language)
+            if language is not None:
+                language = language.language
 
-            # Generate n-grams
-            n_grams = ngrams_func(sentences)
+                # Tokenize sentences
+                sentences = tokenize_sentences_func(text, language)
 
-            # Filter based on perplexity
-            filtered_n_grams = perplexity_filter_func(n_grams, language)
+                # Generate n-grams
+                n_grams = ngrams_func(sentences)
 
-            candidates.extend(filtered_n_grams)
+                # Filter based on perplexity
+                filtered_n_grams = perplexity_filter_func(n_grams, language)
 
-    return candidates
+                candidates.extend(filtered_n_grams)
+
+        if len(candidates) > 0:
+            yield item[0], candidates
 
 
 def local_session(num_cores=4, mem_gb=16):
     """Build a local spark session"""
     spark = (
         SparkSession.builder.config("spark.driver.memory", str(mem_gb) + "G")
+        .config("spark.executor.memory", str(mem_gb) + "G")
         .master("local[" + str(num_cores) + "]")
         .appName("image_text_pairs")
         .getOrCreate()
@@ -172,7 +137,6 @@ def get_date_str():
 
 
 def get_cc_warc_links(source_cc_protocol):
-
     if source_cc_protocol == "http":
         fs, p = fsspec.core.url_to_fs("https://commoncrawl.org/the-data/get-started/")
         a = fs.open(p).read()
@@ -194,25 +158,23 @@ def get_cc_warc_links(source_cc_protocol):
 
 
 def read_warc_index_file(warc_index):
-    for i in range(10):
-        try:
-            with fsspec.open(warc_index, "rb", compression="gzip") as f:
+    with fsspec.open(warc_index, "rb", compression="gzip") as f:
+        for i in range(10):
+            try:
                 warcs = [a.decode("utf8").strip() for a in f.readlines()]
-            break
-        except Exception as ex:
-            if i == 9:
-                logger.info(f"failed 10 times skipping {warc_url}")
-                return
-            logger.info(ex)
-            logger.info(f"retrying read {i+1}/10 ")
-            time.sleep(1)
+                break
+            except Exception as e:
+                if i == 9:
+                    logger.info(f"failed 10 times skipping {warc_index}")
+                    return
+                logger.info(e)
+                logger.info(f"retrying read {i+1}/10 ")
+                time.sleep(1)
 
     return warcs
 
 
-def read_warc_index_files(
-    shard_count=None, warc_count=1000, source_cc_protocol="http"
-):
+def read_warc_index_files(shard_count=None, warc_count=1000, source_cc_protocol="http"):
     """Read all warc index files"""
     # Taken from https://github.com/rom1504/cc2dataset/blob/main/cc2dataset/main.py#L170
     cc_warc_links = get_cc_warc_links(source_cc_protocol)
@@ -227,7 +189,7 @@ def read_warc_index_files(
     if warc_count is not None:
         all_warcs = random.choices(all_warcs, k=warc_count)
     else:
-        # shuffle to increase duplication over each part hence reduce size of each part after duplication
+        # shuffle to increase duplication over each part hence reduce size of each part after deduplication
         random.shuffle(all_warcs)
 
     if source_cc_protocol == "http":
@@ -240,7 +202,7 @@ def read_warc_index_files(
     return all_warcs
 
 
-def get_images_and_surrounding_text(text, images_to_url, candidate_generation_func):
+def get_images_and_surrounding_text(text, images_to_url):
     # Get start and end indices of every image tag in text
     # Hack think more about this
     image_to_idxs = OrderedDict()
@@ -249,10 +211,8 @@ def get_images_and_surrounding_text(text, images_to_url, candidate_generation_fu
             image_to_idxs[image_name] = re.search(image_name, text).span()
 
     last_end = 0
-    image_links_and_surrounding_text = []
     # For every image
     for idx, (img_name, img_span) in enumerate(image_to_idxs.items()):
-
         # get text before and text after image
         start, end = img_span
 
@@ -267,16 +227,10 @@ def get_images_and_surrounding_text(text, images_to_url, candidate_generation_fu
 
         url = images_to_url[img_name]
 
-        image_links_and_surrounding_text.append((url, before_text, after_text))
-
-    for image_url, before_text, after_text in image_links_and_surrounding_text:
-        # Create hash of image url to deduplicate
-        url_hash = hashlib.md5(image_url.encode()).hexdigest()
-
-        yield (url_hash, image_url, candidate_generation_func(before_text, after_text))
+        yield (url, [before_text, after_text])
 
 
-def process_warc_record(html_bytes, url, candidate_generation_func):
+def process_warc_record(html_bytes, url):
     # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/extraction_utils.py#L10
     encoding = detect_encoding(html_bytes)
     tree = HTMLTree.parse_from_bytes(html_bytes, encoding)
@@ -304,13 +258,11 @@ def process_warc_record(html_bytes, url, candidate_generation_func):
         noscript=False,
     )
 
-    for url_hash, image_url, candidates in get_images_and_surrounding_text(
-        text, images_to_url, candidate_generation_func
-    ):
-        yield url_hash, image_url, candidates
+    for image_url, candidates in get_images_and_surrounding_text(text, images_to_url):
+        yield image_url, candidates
 
 
-def process_warc(x, logging_frequency, candidate_generation_func):
+def process_warc(x, logging_frequency, max_num_records=None):
     # Refer - https://github.com/siddheshmhatre/Big-Interleaved-Dataset/blob/optimize_script/bild/pipeline_utils.py#L9
     x = list(x)
 
@@ -320,20 +272,20 @@ def process_warc(x, logging_frequency, candidate_generation_func):
 
     records_processed = 0
 
-    # Iterate through each record
     with fsspec.open(warc_url, "rb") as f:
         for i in range(10):
             try:
                 stream = BytesIO(f.read())
                 break
-            except Exception as e:
+            except Exception as ex:
                 if i == 9:
-                    logger.info("failed 10 times, skipping ", path)
+                    logger.info(f"failed 10 times skipping {warc_url}")
                     return
-                logger.info(e)
-                logger.info(f"retrying reading {i}/10")
+                logger.info(ex)
+                logger.info(f"retrying read {i+1}/10 ")
                 time.sleep(1)
 
+        # Iterate through each record
         for record in ArchiveIterator(stream, max_content_length=4 * 1024**2):
             try:
                 if record.headers is None:
@@ -347,14 +299,25 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                     content_type = str(record.http_content_type).lower()
 
                     if content_type.startswith("text/html"):
+                        if (records_processed % logging_frequency) == 0:
+                            logger.info(f"Processing record {records_processed}")
 
                         url = str(record.headers["WARC-Target-URI"])
                         html_bytes = record.reader.read()
-
-                        for url_hash, image_url, candidates in process_warc_record(
-                            html_bytes, url, candidate_generation_func
+                        for image_url, candidates in process_warc_record(
+                            html_bytes, url
                         ):
-                            yield url_hash, image_url, candidates
+                            yield image_url, candidates
+
+                        records_processed += 1
+
+                        if (max_num_records is not None) and (
+                            records_processed >= max_num_records
+                        ):
+                            logger.info(
+                                f"Processed max num records {records_processed}"
+                            )
+                            break
 
                         records_processed += 1
 
@@ -365,7 +328,9 @@ def process_warc(x, logging_frequency, candidate_generation_func):
                 logger.info(f"Unable to process record {e}")
 
     end = timer()
-    logger.info(f"Time to proces one WARC with {records_processed} records : {end - start}")
+    logger.info(
+        f"Time to proces num records {records_processed} in one WARC : {end - start}"
+    )
 
 
 def process_one_part(
@@ -376,10 +341,10 @@ def process_one_part(
     logging_frequency,
     ngram_range=(3, 20),
     tokenize_sentences=tokenize_sentences,
-    ngrams_filter=entity_filter,
     perplexity_filter_func=perplexity_filter,
     lang_to_perplexity_models={"en": KenlmModel.from_pretrained("wikipedia", "en")},
     n_largest=10,
+    max_num_records_per_warc=None,
 ):
     # Create output path
     job_id = get_date_str()
@@ -391,9 +356,6 @@ def process_one_part(
     # Create spark context
     sc = SparkContext.getOrCreate()
 
-    # Extract image links and candidate captions from warc index files
-    warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
-
     ngrams_func = partial(generate_n_grams, ngram_range=ngram_range)
     perp_func = partial(
         perplexity_filter_func, models=lang_to_perplexity_models, n_largest=n_largest
@@ -402,37 +364,34 @@ def process_one_part(
         image_link_to_caption_candidates,
         tokenize_sentences_func=tokenize_sentences,
         ngrams_func=ngrams_func,
-        ngrams_filter_func=ngrams_filter,
         perplexity_filter_func=perp_func,
     )
     process_warc_function = partial(
         process_warc,
         logging_frequency=logging_frequency,
-        candidate_generation_func=candidate_generation_func,
+        max_num_records=max_num_records_per_warc,
     )
 
-    # Create image to captions df
+    # Extract image links and candidate captions from warc index files
+    warc_index_files_rdd = sc.parallelize(warc_index_files, len(warc_index_files))
+
+    # Create image to before text; after text df
     image_to_candidate_caps_rdd = warc_index_files_rdd.mapPartitions(
         process_warc_function
     )
 
-    # Filter if no candidate captions
-    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.filter(
-        lambda x: len(x[2]) > 0
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.repartition(num_cores * 3)
+
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(
+        candidate_generation_func
     )
 
     # Convert to df
-    df = image_to_candidate_caps_rdd.toDF(["uid", "url", "candidates"])
+    df = image_to_candidate_caps_rdd.toDF(["url", "candidates"])
 
     # Groupby by url
-    agg_candidates = df.groupBy(["url"]).agg(
+    df = df.groupBy(["url"]).agg(
         F.flatten(F.collect_list("candidates")).alias("candidates")
-    )
-
-    df = (
-        df.join(agg_candidates, "url", "inner")
-        .drop(df.candidates)
-        .drop_duplicates(["uid"])
     )
 
     logger.info(f"Writing to {output_path}")
@@ -441,6 +400,9 @@ def process_one_part(
 
     # Write to disk
     df.write.mode("overwrite").parquet(output_path)
+
+    df = spark.read.parquet(output_path)
+    logger.info(f"Size: {df.count()}")
 
 
 def image_text_pairs(
@@ -451,9 +413,9 @@ def image_text_pairs(
     download_nltk_models=False,
     logging_frequency=1000,
     num_cores=32,
-    mem_gb=64
+    mem_gb=64,
+    max_num_records_per_warc=None,
 ):
-
     logger.info(locals())
 
     if download_nltk_models:
@@ -469,7 +431,14 @@ def image_text_pairs(
     logger.info(f"Processing {len(warc_index_files)} warcs")
 
     # Create map from url to potential captions
-    process_one_part(output_path, warc_index_files, num_cores, mem_gb, logging_frequency=logging_frequency)
+    process_one_part(
+        output_path,
+        warc_index_files,
+        num_cores,
+        mem_gb,
+        logging_frequency=logging_frequency,
+        max_num_records_per_warc=max_num_records_per_warc,
+    )
 
     end = timer()
 
