@@ -3,7 +3,6 @@ import os
 import time
 import heapq
 import fsspec
-import hashlib
 import random
 import cld3
 import nltk
@@ -13,6 +12,7 @@ import pyspark.sql.functions as F
 
 from functools import partial
 from .model import KenlmModel
+from .spark_session_builder import build_spark_session
 from pyspark.sql import SparkSession
 from multiprocessing.pool import ThreadPool
 from pyspark import SparkContext
@@ -118,18 +118,6 @@ def image_link_to_caption_candidates(
 
         if len(candidates) > 0:
             yield item[0], candidates
-
-
-def local_session(num_cores=4, mem_gb=16):
-    """Build a local spark session"""
-    spark = (
-        SparkSession.builder.config("spark.driver.memory", str(mem_gb) + "G")
-        .config("spark.executor.memory", str(mem_gb) + "G")
-        .master("local[" + str(num_cores) + "]")
-        .appName("image_text_pairs")
-        .getOrCreate()
-    )
-    return spark
 
 
 def get_date_str():
@@ -339,6 +327,7 @@ def process_one_part(
     num_cores,
     mem_gb,
     logging_frequency,
+    master="local",
     ngram_range=(3, 20),
     tokenize_sentences=tokenize_sentences,
     perplexity_filter_func=perplexity_filter,
@@ -351,7 +340,7 @@ def process_one_part(
     output_path = os.path.join(output_path, job_id)
 
     # Create spark session
-    spark = local_session(num_cores=num_cores, mem_gb=mem_gb)
+    spark = build_spark_session(master=master, num_cores=num_cores, mem_gb=mem_gb)
 
     # Create spark context
     sc = SparkContext.getOrCreate()
@@ -407,6 +396,7 @@ def process_one_part(
 
 def image_text_pairs(
     output_path,
+    master="local",
     num_shards=None,
     num_warcs=None,
     source_cc_protocol="http",
@@ -438,6 +428,7 @@ def image_text_pairs(
         mem_gb,
         logging_frequency=logging_frequency,
         max_num_records_per_warc=max_num_records_per_warc,
+        master=master,
     )
 
     end = timer()
