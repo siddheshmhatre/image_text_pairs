@@ -339,6 +339,8 @@ def process_one_part(
     job_id = get_date_str()
     output_path = os.path.join(output_path, job_id)
 
+    logger.info(f"Writing to {output_path}")
+
     # Create spark session
     spark = build_spark_session(master=master, num_cores=num_cores, mem_gb=mem_gb)
 
@@ -383,11 +385,9 @@ def process_one_part(
         F.flatten(F.collect_list("candidates")).alias("candidates")
     )
 
-    logger.info(f"Writing to {output_path}")
-
+    # Write to disk
     df = df.repartition(max(256, len(warc_index_files)))
 
-    # Write to disk
     df.write.mode("overwrite").parquet(output_path)
 
     df = spark.read.parquet(output_path)
