@@ -21,7 +21,6 @@ def local_session(num_cores=4, mem_gb=16):
     """Build a local spark session"""
     spark = (
         SparkSession.builder.config("spark.driver.memory", str(mem_gb) + "G")
-        .config("spark.executor.memory", str(mem_gb) + "G")
         .master("local[" + str(num_cores) + "]")
         .appName("image_text_pairs")
         .getOrCreate()

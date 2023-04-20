@@ -371,7 +371,9 @@ def process_one_part(
         process_warc_function
     )
 
-    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.repartition(num_cores * 3)
+    image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.repartition(
+        max(num_cores * 3, len(warc_index_files))
+    )
 
     image_to_candidate_caps_rdd = image_to_candidate_caps_rdd.mapPartitions(
         candidate_generation_func
