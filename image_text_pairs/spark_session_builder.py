@@ -78,7 +78,7 @@ def aws_ec2_s3_spark_session(master, num_cores=128, mem_gb=256):
         .config("spark.hadoop.fs.s3a.fast.upload.buffer", "array")
         .config("spark.hadoop.fs.s3a.bucket.all.committer.magic.enabled", "true")
         .master(master)  # this should be set to the spark master url
-        .appName("cc2dataset")
+        .appName("image_text_pairs")
         .getOrCreate()
     )
     return spark
